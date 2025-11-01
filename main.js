@@ -117,6 +117,7 @@ class Clickhouse extends utils.Adapter {
 		this._subscribeAll = false;
 		this._connected = false;
 		this._tableIdentifier = "";
+		this._compactSchema = false;
 		/** @type {{ host: string; port: number; secure: boolean; username: string; password: string; database: string; table: string; flushInterval: number; batchSize: number; connectTimeout: number }} */
 		this._runtimeOptions = {
 			host: "127.0.0.1",
@@ -249,21 +250,74 @@ class Clickhouse extends utils.Adapter {
 
 	buildCreateTableQuery() {
 		return `CREATE TABLE IF NOT EXISTS ${this._tableIdentifier}
-(
+{
 	 id String,
 	 ts DateTime64(3, 'UTC'),
-	 lc DateTime64(3, 'UTC'),
-	 type Enum8('number' = 0, 'string' = 1, 'boolean' = 2, 'json' = 3, 'null' = 4),
-	 val_float Float64,
-	 val_string String,
-	 val_bool UInt8,
-	 val_json String,
-	 ack UInt8,
-	 q Int32,
-	 source String
+	 val_float Nullable(Float64),
+	 val_string Nullable(String),
+	 val_bool Nullable(UInt8),
+	 val_json Nullable(String),
+	 q Int32
 )
 ENGINE = MergeTree()
 ORDER BY (id, ts)`;
+	}
+
+	async alignTableSchema() {
+		if (!this._client) {
+			this._compactSchema = false;
+			return;
+		}
+		try {
+			const describeBefore = await this._client.query({
+				query: `DESCRIBE TABLE ${this._tableIdentifier}`,
+				format: "JSONEachRow",
+			});
+			const beforeRows = await describeBefore.json();
+			const columnTypes = new Map(beforeRows.map(row => [row.name, row.type]));
+			for (const column of ["lc", "type", "ack", "source"]) {
+				if (columnTypes.has(column)) {
+					await this._client.command({
+						query: `ALTER TABLE ${this._tableIdentifier} DROP COLUMN ${this.quoteIdent(column)}`,
+					});
+				}
+			}
+			const desiredTypes = {
+				val_float: "Nullable(Float64)",
+				val_string: "Nullable(String)",
+				val_bool: "Nullable(UInt8)",
+				val_json: "Nullable(String)",
+				q: "Int32",
+			};
+			for (const [column, type] of Object.entries(desiredTypes)) {
+				const current = columnTypes.get(column);
+				if (current && current !== type) {
+					await this._client.command({
+						query: `ALTER TABLE ${this._tableIdentifier} MODIFY COLUMN ${this.quoteIdent(column)} ${type}`,
+					});
+				}
+			}
+		} catch (error) {
+			this.log.debug(`Table schema alignment skipped: ${extractError(error)}`);
+		}
+		try {
+			const describeAfter = await this._client.query({
+				query: `DESCRIBE TABLE ${this._tableIdentifier}`,
+				format: "JSONEachRow",
+			});
+			const afterRows = await describeAfter.json();
+			const columns = new Map(afterRows.map(row => [row.name, row.type]));
+			const compact = !columns.has("lc") && !columns.has("type") && !columns.has("ack") && !columns.has("source") &&
+				columns.get("val_float") === "Nullable(Float64)" &&
+				columns.get("val_string") === "Nullable(String)" &&
+				columns.get("val_bool") === "Nullable(UInt8)" &&
+				columns.get("val_json") === "Nullable(String)" &&
+				columns.get("q") === "Int32";
+			this._compactSchema = compact;
+		} catch (error) {
+			this._compactSchema = false;
+			this.log.debug(`Cannot verify table schema: ${extractError(error)}`);
+		}
 	}
 
 	async connectToClickHouse() {
@@ -296,6 +350,7 @@ ORDER BY (id, ts)`;
 
 		this._tableIdentifier = this.quoteIdent(this._runtimeOptions.table);
 		await this._client.command({ query: this.buildCreateTableQuery() });
+		await this.alignTableSchema();
 		this.setConnected(true);
 		this.log.debug(`Connected to ClickHouse; using table ${this._runtimeOptions.database}.${this._runtimeOptions.table}`);
 		this.startFlushTimer();
@@ -687,6 +742,19 @@ ORDER BY (id, ts)`;
 	}
 
 	buildRow(id, converted, state) {
+		if (this._compactSchema) {
+			return {
+				id,
+				ts: formatDateTime(state.ts),
+				val_float: converted.type === VALUE_TYPES.NUMBER ? converted.value : null,
+				val_string: converted.type === VALUE_TYPES.STRING ? converted.value : null,
+				val_bool:
+					converted.type === VALUE_TYPES.BOOLEAN ? (converted.value ? 1 : 0) : null,
+				val_json: converted.type === VALUE_TYPES.JSON ? converted.value : null,
+				q: state.q !== undefined ? state.q : 0,
+			};
+		}
+
 		return {
 			id,
 			ts: formatDateTime(state.ts),
@@ -1063,16 +1131,42 @@ ORDER BY (id, ts)`;
 		}
 
 		const order = options.returnNewestEntries ? "DESC" : "ASC";
-		const query = `SELECT toUnixTimestamp64Milli(ts) AS ts,
-			toUnixTimestamp64Milli(lc) AS lc,
-			type,
-			val_float,
-			val_string,
-			val_bool,
-			val_json,
-			ack,
-			q,
-			source
+		let selectClause;
+		if (this._compactSchema) {
+			selectClause = `SELECT
+				toUnixTimestamp64Milli(ts) AS ts,
+				toUnixTimestamp64Milli(ts) AS lc,
+				multiIf(
+					val_json IS NOT NULL, '${VALUE_TYPES.JSON}',
+					val_string IS NOT NULL, '${VALUE_TYPES.STRING}',
+					val_bool IS NOT NULL, '${VALUE_TYPES.BOOLEAN}',
+					val_float IS NOT NULL, '${VALUE_TYPES.NUMBER}',
+					'${VALUE_TYPES.NULL}'
+				) AS type,
+				val_float,
+				val_string,
+				val_bool,
+				val_json,
+				q,
+				1 AS ack,
+				'' AS source
+			`;
+		} else {
+			selectClause = `SELECT
+				toUnixTimestamp64Milli(ts) AS ts,
+				toUnixTimestamp64Milli(lc) AS lc,
+				type,
+				val_float,
+				val_string,
+				val_bool,
+				val_json,
+				ack,
+				q,
+				source
+			`;
+		}
+
+		const query = `${selectClause}
 		FROM ${this._tableIdentifier}
 		WHERE ${where.join(" AND ")}
 		ORDER BY ts ${order}

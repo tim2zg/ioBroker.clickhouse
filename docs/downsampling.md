@@ -7,6 +7,33 @@ This guide configures ClickHouse so you keep full-resolution telemetry for the m
 > - Daily aggregates are stored in `iobroker.history_daily` once you create the objects below.
 > - Modify database/table names if you changed them in the adapter config.
 
+## 0. Confirm the Compact History Schema
+
+Starting with the compact layout the adapter writes only the columns it needs: `id`, `ts`, nullable value columns (`val_float`, `val_string`, `val_bool`, `val_json`) and `q`. Upgrade to the latest adapter, restart it once, then verify the table structure:
+
+```sql
+DESCRIBE TABLE iobroker.history;
+```
+
+You should **not** see legacy columns such as `type`, `lc`, `ack`, or `source`. If they still exist, rerun the adapter or manually drop them:
+
+```sql
+ALTER TABLE iobroker.history
+    DROP COLUMN IF EXISTS lc,
+    DROP COLUMN IF EXISTS type,
+    DROP COLUMN IF EXISTS ack,
+    DROP COLUMN IF EXISTS source;
+
+ALTER TABLE iobroker.history
+    MODIFY COLUMN val_float Nullable(Float64),
+    MODIFY COLUMN val_string Nullable(String),
+    MODIFY COLUMN val_bool Nullable(UInt8),
+    MODIFY COLUMN val_json Nullable(String),
+    MODIFY COLUMN q Int32;
+```
+
+With the compact schema in place you get roughly a 50 % footprint reduction before any downsampling is applied.
+
 ## 1. Retain Raw History for 3 Months
 
 Add a TTL to the raw history table so rows older than 90 days are deleted automatically.
