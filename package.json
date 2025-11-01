@@ -67,7 +67,8 @@
     "check": "tsc --noEmit -p tsconfig.check.json",
     "lint": "eslint .",
     "translate": "translate-adapter",
-    "release": "release-script"
+    "release": "release-script",
+    "downsample": "node scripts/downsample.js"
   },
   "bugs": {
     "url": "https://github.com/tim2zg/ioBroker.clickhouse/issues"

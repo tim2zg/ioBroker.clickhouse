@@ -55,6 +55,7 @@ const VALUE_COLUMN_CONFIG = {
 };
 
 const NUMERIC_EPSILON = 1e-12;
+const RAW_HISTORY_TTL_DAYS = 90;
 
 function isObject(value) {
 	return Object.prototype.toString.call(value) === "[object Object]";
@@ -162,6 +163,11 @@ class Clickhouse extends utils.Adapter {
 		this._registryTable = "";
 		this._registryIdentifier = "";
 		this._tableCache = new Map();
+		this._aggregateStateTable = "";
+		this._aggregateStateIdentifier = "";
+		this._aggregateViewTable = "";
+		this._aggregateViewIdentifier = "";
+		this._materializedViewCache = new Set();
 		/** @type {{ host: string; port: number; secure: boolean; username: string; password: string; database: string; table: string; flushInterval: number; batchSize: number; connectTimeout: number }} */
 		this._runtimeOptions = {
 			host: "127.0.0.1",
@@ -356,6 +362,17 @@ class Clickhouse extends utils.Adapter {
 		return candidate;
 	}
 
+	generateMaterializedViewName(tableName) {
+		const prefix = "mv_";
+		const maxIdentifierLength = 62;
+		const base = `${prefix}${tableName}`;
+		if (base.length <= maxIdentifierLength) {
+			return base;
+		}
+		const sliceLength = Math.max(1, maxIdentifierLength - prefix.length);
+		return `${prefix}${tableName.slice(-sliceLength)}`;
+	}
+
 	getColumnConfig(type) {
 		return VALUE_COLUMN_CONFIG[type] || VALUE_COLUMN_CONFIG[VALUE_TYPES.STRING];
 	}
@@ -385,6 +402,74 @@ ORDER BY id`;
 		await this._client.command({ query });
 	}
 
+	async ensureAggregateInfrastructure() {
+		if (!this._client) {
+			return;
+		}
+		this._aggregateStateTable = `${this._tablePrefix}_daily_state`;
+		this._aggregateStateIdentifier = this.quoteIdent(this._aggregateStateTable);
+		this._aggregateViewTable = `${this._tablePrefix}_daily`;
+		this._aggregateViewIdentifier = this.quoteIdent(this._aggregateViewTable);
+
+		const stateQuery = `CREATE TABLE IF NOT EXISTS ${this._aggregateStateIdentifier} (
+	 id String,
+	 day Date,
+	 min_state AggregateFunction(min, Float64),
+	 max_state AggregateFunction(max, Float64),
+	 avg_state AggregateFunction(avg, Float64),
+	 last_state AggregateFunction(argMax, Float64, DateTime64(3, 'UTC')),
+	 count_state AggregateFunction(count),
+	 sum_state AggregateFunction(sum, Float64),
+	 integral_state AggregateFunction(sum, Float64),
+	 updated DateTime DEFAULT now()
+)
+ENGINE = AggregatingMergeTree()
+ORDER BY (id, day)`;
+		await this._client.command({ query: stateQuery });
+
+		const viewQuery = `CREATE OR REPLACE VIEW ${this._aggregateViewIdentifier} AS
+SELECT
+	id,
+	day,
+	finalizeAggregation(min_state) AS min,
+	finalizeAggregation(max_state) AS max,
+	finalizeAggregation(avg_state) AS avg,
+	finalizeAggregation(last_state) AS last,
+	finalizeAggregation(count_state) AS samples,
+	finalizeAggregation(sum_state) AS sum,
+	finalizeAggregation(integral_state) AS integral_kwh,
+	max(updated) AS updated
+FROM ${this._aggregateStateIdentifier}
+GROUP BY id, day`;
+		await this._client.command({ query: viewQuery });
+
+		await this.loadMaterializedViewCache();
+	}
+
+	async loadMaterializedViewCache() {
+		this._materializedViewCache.clear();
+		if (!this._client) {
+			return;
+		}
+		try {
+			const result = await this._client.query({
+				query: `SELECT name FROM system.tables WHERE database = {db:String} AND engine = 'MaterializedView'`,
+				format: "JSONEachRow",
+				query_params: {
+					db: this._runtimeOptions.database,
+				},
+			});
+			const rows = await result.json();
+			for (const row of rows) {
+				if (row?.name) {
+					this._materializedViewCache.add(String(row.name));
+				}
+			}
+		} catch (error) {
+			this.log.debug(`Could not load materialized view cache: ${extractError(error)}`);
+		}
+	}
+
 	async loadTableRegistry() {
 		this._tableCache.clear();
 		if (!this._client) {
@@ -412,15 +497,18 @@ ORDER BY id`;
 			return info;
 		}
 		const tableName = this.generateTableName(id);
+		const tableIdentifier = this.quoteIdent(tableName);
 		const columnConfig = this.getColumnConfig(valueType);
 		await this._client.command({
-			query: `CREATE TABLE IF NOT EXISTS ${this.quoteIdent(tableName)} (
+			query: `CREATE TABLE IF NOT EXISTS ${tableIdentifier} (
 	 ts DateTime64(3, 'UTC'),
 	 value ${columnConfig.columnType}
 )
 ENGINE = MergeTree()
-ORDER BY ts`,
+ORDER BY ts
+TTL ts + INTERVAL ${RAW_HISTORY_TTL_DAYS} DAY DELETE`,
 		});
+		await this.ensureRawTableTtl(tableName);
 		await this._client.insert({
 			table: this._registryTable,
 			values: [
@@ -435,6 +523,9 @@ ORDER BY ts`,
 		});
 		info = { table: tableName, type: valueType };
 		this._tableCache.set(id, info);
+		if (this.supportsContinuousAggregation(valueType)) {
+			await this.ensureMaterializedViewFor(id, info);
+		}
 		return info;
 	}
 
@@ -462,6 +553,83 @@ ORDER BY ts`,
 			this.log.debug(`Cannot resolve table for ${id}: ${extractError(error)}`);
 		}
 		throw new Error(`No ClickHouse history table registered for ${id}`);
+	}
+
+	supportsContinuousAggregation(valueType) {
+		return valueType === VALUE_TYPES.NUMBER;
+	}
+
+	async ensureRawTableTtl(tableName) {
+		if (!this._client) {
+			return;
+		}
+		const identifier = this.quoteIdent(tableName);
+		const query = `ALTER TABLE ${identifier} MODIFY TTL ts + INTERVAL ${RAW_HISTORY_TTL_DAYS} DAY DELETE`;
+		try {
+			await this._client.command({ query });
+		} catch (error) {
+			this.log.debug(`Could not enforce TTL for ${tableName}: ${extractError(error)}`);
+		}
+	}
+
+	async ensureMaterializedViewFor(id, info) {
+		if (!this._client || !this.supportsContinuousAggregation(info.type)) {
+			return;
+		}
+		if (!this._aggregateStateTable) {
+			await this.ensureAggregateInfrastructure();
+		}
+		const mvName = this.generateMaterializedViewName(info.table);
+		if (this._materializedViewCache.has(mvName)) {
+			return;
+		}
+		const mvIdentifier = `${this.quoteIdent(mvName)}`;
+		const stateIdentifier = this._aggregateStateIdentifier;
+		const rawIdentifier = `${this.quoteIdent(info.table)}`;
+		const escapedId = String(id).replace(/'/g, "''");
+		const query = `CREATE MATERIALIZED VIEW IF NOT EXISTS ${mvIdentifier}
+TO ${stateIdentifier}
+AS
+SELECT
+	'${escapedId}' AS id,
+	day,
+	minState(val) AS min_state,
+	maxState(val) AS max_state,
+	avgState(val) AS avg_state,
+	argMaxState(val, ts) AS last_state,
+	countState() AS count_state,
+	sumState(val) AS sum_state,
+	sumState(val * duration / 3.6e6) AS integral_state,
+	now() AS updated
+FROM (
+	SELECT
+		ts,
+		toDate(ts) AS day,
+		toFloat64(value) AS val,
+		greatest(0, dateDiff('second', ts, coalesce(lead(ts) OVER w, ts))) AS duration
+	FROM ${rawIdentifier}
+	WINDOW w AS (ORDER BY ts)
+)
+GROUP BY day`;
+		await this._client.command({ query });
+		this._materializedViewCache.add(mvName);
+		this.log.debug(`Ensured materialized view ${mvName} for ${id}`);
+	}
+
+	async ensureMaterializedViewsForCache() {
+		if (!this._client) {
+			return;
+		}
+		for (const id of Array.from(this._tableCache.keys())) {
+			const info = this._tableCache.get(id);
+			if (!info) {
+				continue;
+			}
+			await this.ensureRawTableTtl(info.table);
+			if (this.supportsContinuousAggregation(info.type)) {
+				await this.ensureMaterializedViewFor(id, info);
+			}
+		}
 	}
 
 	async connectToClickHouse() {
@@ -496,7 +664,9 @@ ORDER BY ts`,
 		this._registryTable = `${this._tablePrefix}_registry`;
 		this._registryIdentifier = this.quoteIdent(this._registryTable);
 		await this.ensureRegistryTable();
+		await this.ensureAggregateInfrastructure();
 		await this.loadTableRegistry();
+		await this.ensureMaterializedViewsForCache();
 		this.setConnected(true);
 		this.log.debug(
 			`Connected to ClickHouse; using table prefix ${this._runtimeOptions.database}.${this._tablePrefix} (registry ${this._registryTable})`,
