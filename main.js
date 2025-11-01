@@ -12,6 +12,48 @@ const VALUE_TYPES = {
 	NULL: "null",
 };
 
+const VALUE_COLUMN_CONFIG = {
+	[VALUE_TYPES.NUMBER]: {
+		columnType: "Nullable(Float64)",
+		encode: value => (value === null || value === undefined ? null : value),
+		decode: value => (value === null || value === undefined ? null : Number(value)),
+	},
+	[VALUE_TYPES.STRING]: {
+		columnType: "Nullable(String)",
+		encode: value => (value === null || value === undefined ? null : String(value)),
+		decode: value => (value === null || value === undefined ? null : String(value)),
+	},
+	[VALUE_TYPES.BOOLEAN]: {
+		columnType: "Nullable(UInt8)",
+		encode: value => {
+			if (value === null || value === undefined) {
+				return null;
+			}
+			return value ? 1 : 0;
+		},
+		decode: value => (value === null || value === undefined ? null : value === 1 || value === true),
+	},
+	[VALUE_TYPES.JSON]: {
+		columnType: "Nullable(String)",
+		encode: value => (value === null || value === undefined ? null : String(value)),
+		decode: value => {
+			if (value === null || value === undefined) {
+				return null;
+			}
+			try {
+				return JSON.parse(value);
+			} catch (error) {
+				return value;
+			}
+		},
+	},
+	[VALUE_TYPES.NULL]: {
+		columnType: "Nullable(String)",
+		encode: () => null,
+		decode: () => null,
+	},
+};
+
 const NUMERIC_EPSILON = 1e-12;
 
 function isObject(value) {
@@ -116,8 +158,10 @@ class Clickhouse extends utils.Adapter {
 		this._tracked = new Map();
 		this._subscribeAll = false;
 		this._connected = false;
-		this._tableIdentifier = "";
-		this._compactSchema = false;
+		this._tablePrefix = "history";
+		this._registryTable = "";
+		this._registryIdentifier = "";
+		this._tableCache = new Map();
 		/** @type {{ host: string; port: number; secure: boolean; username: string; password: string; database: string; table: string; flushInterval: number; batchSize: number; connectTimeout: number }} */
 		this._runtimeOptions = {
 			host: "127.0.0.1",
@@ -186,7 +230,7 @@ class Clickhouse extends utils.Adapter {
 		this._runtimeOptions.connectTimeout = connectTimeout > 0 ? connectTimeout : this._runtimeOptions.connectTimeout;
 
 		this.log.debug(
-			`Parsed adapter config: host=${this._runtimeOptions.host}:${this._runtimeOptions.port}, secure=${this._runtimeOptions.secure}, database=${this._runtimeOptions.database}, table=${this._runtimeOptions.table}, flushInterval=${this._runtimeOptions.flushInterval}, batchSize=${this._runtimeOptions.batchSize}`,
+			`Parsed adapter config: host=${this._runtimeOptions.host}:${this._runtimeOptions.port}, secure=${this._runtimeOptions.secure}, database=${this._runtimeOptions.database}, tablePrefix=${this._runtimeOptions.table}, flushInterval=${this._runtimeOptions.flushInterval}, batchSize=${this._runtimeOptions.batchSize}`,
 		);
 	}
 
@@ -248,75 +292,176 @@ class Clickhouse extends utils.Adapter {
 		return `\`${String(identifier).replace(/`/g, "``")}\``;
 	}
 
-	buildCreateTableQuery() {
-		return `CREATE TABLE IF NOT EXISTS ${this._tableIdentifier} (
-	 id String,
-	 ts DateTime64(3, 'UTC'),
-	 val_float Nullable(Float64),
-	 val_string Nullable(String),
-	 val_bool Nullable(UInt8),
-	 val_json Nullable(String),
-	 q Int32
-)
-ENGINE = MergeTree()
-ORDER BY (id, ts)`;
+	sanitizeTablePrefix(name) {
+		if (!name) {
+			return "history";
+		}
+		const sanitized = String(name)
+			.trim()
+			.replace(/[^a-zA-Z0-9_]+/g, "_")
+			.replace(/^_+/, "")
+			.replace(/_+$/, "");
+		return sanitized.length ? sanitized : "history";
 	}
 
-	async alignTableSchema() {
+	sanitizeDatapointIdentifier(id) {
+		let sanitized = String(id ?? "")
+			.trim()
+			.replace(/[^a-zA-Z0-9_]+/g, "_")
+			.replace(/_+/g, "_")
+			.replace(/^_+/, "")
+			.replace(/_+$/, "");
+		if (!sanitized) {
+			sanitized = "state";
+		}
+		if (/^[0-9]/.test(sanitized)) {
+			sanitized = `s_${sanitized}`;
+		}
+		const maxIdentifierLength = 48;
+		if (sanitized.length > maxIdentifierLength) {
+			sanitized = sanitized.slice(0, maxIdentifierLength);
+		}
+		return sanitized;
+	}
+
+	isTableNameInUse(name, id) {
+		for (const existingId of Array.from(this._tableCache.keys())) {
+			const info = this._tableCache.get(existingId);
+			if (info && info.table === name && existingId !== id) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	generateTableName(id) {
+		const sanitizedId = this.sanitizeDatapointIdentifier(id);
+		const maxIdentifierLength = 62;
+		const baseName = `${this._tablePrefix}_${sanitizedId}`;
+		const normalizeLength = value => (value.length <= maxIdentifierLength ? value : value.slice(0, maxIdentifierLength));
+		let candidate = normalizeLength(baseName);
+		let counter = 1;
+		while (this.isTableNameInUse(candidate, id)) {
+			const suffix = `_${counter++}`;
+			const maxBaseLength = Math.max(1, maxIdentifierLength - suffix.length);
+			let truncated = baseName;
+			if (truncated.length > maxBaseLength) {
+				truncated = truncated.slice(0, maxBaseLength).replace(/_+$/, "");
+			}
+			if (!truncated.length) {
+				truncated = this._tablePrefix.slice(0, Math.max(1, maxBaseLength));
+			}
+			candidate = `${truncated}${suffix}`;
+		}
+		return candidate;
+	}
+
+	getColumnConfig(type) {
+		return VALUE_COLUMN_CONFIG[type] || VALUE_COLUMN_CONFIG[VALUE_TYPES.STRING];
+	}
+
+	encodeValue(type, value) {
+		const config = this.getColumnConfig(type);
+		return config.encode(value);
+	}
+
+	decodeValue(type, value) {
+		const config = this.getColumnConfig(type);
+		return config.decode(value);
+	}
+
+	async ensureRegistryTable() {
 		if (!this._client) {
-			this._compactSchema = false;
+			return;
+		}
+		const query = `CREATE TABLE IF NOT EXISTS ${this._registryIdentifier} (
+	 id String,
+	 table String,
+	 type String,
+	 updated DateTime64(3, 'UTC')
+)
+ENGINE = ReplacingMergeTree(updated)
+ORDER BY id`;
+		await this._client.command({ query });
+	}
+
+	async loadTableRegistry() {
+		this._tableCache.clear();
+		if (!this._client) {
 			return;
 		}
 		try {
-			const describeBefore = await this._client.query({
-				query: `DESCRIBE TABLE ${this._tableIdentifier}`,
+			const result = await this._client.query({
+				query: `SELECT id, table, type FROM ${this._registryIdentifier} FINAL`,
 				format: "JSONEachRow",
 			});
-			const beforeRows = await describeBefore.json();
-			const columnTypes = new Map(beforeRows.map(row => [row.name, row.type]));
-			for (const column of ["lc", "type", "ack", "source"]) {
-				if (columnTypes.has(column)) {
-					await this._client.command({
-						query: `ALTER TABLE ${this._tableIdentifier} DROP COLUMN ${this.quoteIdent(column)}`,
-					});
-				}
-			}
-			const desiredTypes = {
-				val_float: "Nullable(Float64)",
-				val_string: "Nullable(String)",
-				val_bool: "Nullable(UInt8)",
-				val_json: "Nullable(String)",
-				q: "Int32",
-			};
-			for (const [column, type] of Object.entries(desiredTypes)) {
-				const current = columnTypes.get(column);
-				if (current && current !== type) {
-					await this._client.command({
-						query: `ALTER TABLE ${this._tableIdentifier} MODIFY COLUMN ${this.quoteIdent(column)} ${type}`,
-					});
+			const rows = await result.json();
+			for (const row of rows) {
+				if (row.id && row.table && row.type) {
+					this._tableCache.set(row.id, { table: row.table, type: row.type });
 				}
 			}
 		} catch (error) {
-			this.log.debug(`Table schema alignment skipped: ${extractError(error)}`);
+			this.log.debug(`Registry load skipped: ${extractError(error)}`);
+		}
+	}
+
+	async ensureTableFor(id, valueType) {
+		let info = this._tableCache.get(id);
+		if (info) {
+			return info;
+		}
+		const tableName = this.generateTableName(id);
+		const columnConfig = this.getColumnConfig(valueType);
+		await this._client.command({
+			query: `CREATE TABLE IF NOT EXISTS ${this.quoteIdent(tableName)} (
+	 ts DateTime64(3, 'UTC'),
+	 value ${columnConfig.columnType}
+)
+ENGINE = MergeTree()
+ORDER BY ts`,
+		});
+		await this._client.insert({
+			table: this._registryTable,
+			values: [
+				{
+					id,
+					table: tableName,
+					type: valueType,
+					updated: formatDateTime(Date.now()),
+				},
+			],
+			format: "JSONEachRow",
+		});
+		info = { table: tableName, type: valueType };
+		this._tableCache.set(id, info);
+		return info;
+	}
+
+	async resolveTableInfo(id) {
+		let info = this._tableCache.get(id);
+		if (info) {
+			return info;
+		}
+		if (!this._client) {
+			throw new Error("Not connected to ClickHouse");
 		}
 		try {
-			const describeAfter = await this._client.query({
-				query: `DESCRIBE TABLE ${this._tableIdentifier}`,
+			const result = await this._client.query({
+				query: `SELECT id, table, type FROM ${this._registryIdentifier} FINAL WHERE id = {id:String} LIMIT 1`,
 				format: "JSONEachRow",
+				query_params: { id: String(id) },
 			});
-			const afterRows = await describeAfter.json();
-			const columns = new Map(afterRows.map(row => [row.name, row.type]));
-			const compact = !columns.has("lc") && !columns.has("type") && !columns.has("ack") && !columns.has("source") &&
-				columns.get("val_float") === "Nullable(Float64)" &&
-				columns.get("val_string") === "Nullable(String)" &&
-				columns.get("val_bool") === "Nullable(UInt8)" &&
-				columns.get("val_json") === "Nullable(String)" &&
-				columns.get("q") === "Int32";
-			this._compactSchema = compact;
+			const rows = await result.json();
+			if (rows.length) {
+				info = { table: rows[0].table, type: rows[0].type };
+				this._tableCache.set(id, info);
+				return info;
+			}
 		} catch (error) {
-			this._compactSchema = false;
-			this.log.debug(`Cannot verify table schema: ${extractError(error)}`);
+			this.log.debug(`Cannot resolve table for ${id}: ${extractError(error)}`);
 		}
+		throw new Error(`No ClickHouse history table registered for ${id}`);
 	}
 
 	async connectToClickHouse() {
@@ -347,11 +492,15 @@ ORDER BY (id, ts)`;
 			request_timeout: this._runtimeOptions.connectTimeout,
 		});
 
-		this._tableIdentifier = this.quoteIdent(this._runtimeOptions.table);
-		await this._client.command({ query: this.buildCreateTableQuery() });
-		await this.alignTableSchema();
+		this._tablePrefix = this.sanitizeTablePrefix(this._runtimeOptions.table);
+		this._registryTable = `${this._tablePrefix}_registry`;
+		this._registryIdentifier = this.quoteIdent(this._registryTable);
+		await this.ensureRegistryTable();
+		await this.loadTableRegistry();
 		this.setConnected(true);
-		this.log.debug(`Connected to ClickHouse; using table ${this._runtimeOptions.database}.${this._runtimeOptions.table}`);
+		this.log.debug(
+			`Connected to ClickHouse; using table prefix ${this._runtimeOptions.database}.${this._tablePrefix} (registry ${this._registryTable})`,
+		);
 		this.startFlushTimer();
 	}
 
@@ -740,32 +889,15 @@ ORDER BY (id, ts)`;
 		return false;
 	}
 
-	buildRow(id, converted, state) {
-		if (this._compactSchema) {
-			return {
-				id,
-				ts: formatDateTime(state.ts),
-				val_float: converted.type === VALUE_TYPES.NUMBER ? converted.value : null,
-				val_string: converted.type === VALUE_TYPES.STRING ? converted.value : null,
-				val_bool:
-					converted.type === VALUE_TYPES.BOOLEAN ? (converted.value ? 1 : 0) : null,
-				val_json: converted.type === VALUE_TYPES.JSON ? converted.value : null,
-				q: state.q !== undefined ? state.q : 0,
-			};
-		}
-
+	buildRow(id, tableInfo, converted, state) {
 		return {
 			id,
-			ts: formatDateTime(state.ts),
-			lc: formatDateTime(state.lc),
-			type: converted.type,
-			val_float: converted.type === VALUE_TYPES.NUMBER ? converted.value : 0,
-			val_string: converted.type === VALUE_TYPES.STRING ? converted.value : "",
-			val_bool: converted.type === VALUE_TYPES.BOOLEAN ? (converted.value ? 1 : 0) : 0,
-			val_json: converted.type === VALUE_TYPES.JSON ? converted.value : "",
-			ack: state.ack ? 1 : 0,
-			q: state.q !== undefined ? state.q : 0,
-			source: state.from || "",
+			table: tableInfo.table,
+			type: tableInfo.type,
+			values: {
+				ts: formatDateTime(state.ts),
+				value: this.encodeValue(tableInfo.type, converted.value),
+			},
 		};
 	}
 
@@ -773,7 +905,9 @@ ORDER BY (id, ts)`;
 		this._buffer.push(row);
 		const size = this._buffer.length;
 		if (size === 1 || size >= this._runtimeOptions.batchSize || size % 50 === 0) {
-			this.log.debug(`Queued row for ${row.id}; buffer size now ${size}`);
+			this.log.debug(
+				`Queued row for ${row.id} (${row.table}); buffer size now ${size}`,
+			);
 		}
 		if (this._buffer.length >= this._runtimeOptions.batchSize) {
 			await this.flushBuffer();
@@ -814,11 +948,29 @@ ORDER BY (id, ts)`;
 			return;
 		}
 
+		let tableInfo;
+		try {
+			tableInfo = await this.ensureTableFor(id, converted.type);
+			if (tableInfo.type !== converted.type) {
+				converted = this.prepareValue(clonedState.val, { ...settings, storageType: tableInfo.type });
+			}
+		} catch (error) {
+			this.log.warn(`Cannot prepare storage for ${id}: ${extractError(error)}`);
+			return;
+		}
+
+		if (converted.type !== tableInfo.type) {
+			this.log.warn(
+				`Cannot store value for ${id}: storage type ${tableInfo.type} mismatches converted type ${converted.type}`,
+			);
+			return;
+		}
+
 		if (this.shouldSkipValue(entry, converted, clonedState, timerRelog)) {
 			return;
 		}
 
-		const row = this.buildRow(id, converted, clonedState);
+		const row = this.buildRow(id, tableInfo, converted, clonedState);
 		await this.queueRow(row);
 
 		entry.lastStoredState = {
@@ -889,15 +1041,28 @@ ORDER BY (id, ts)`;
 
 		const rows = this._buffer.splice(0);
 		this._flushPromise = (async () => {
+			const grouped = new Map();
+			for (const row of rows) {
+				if (!grouped.has(row.table)) {
+					grouped.set(row.table, []);
+				}
+				grouped.get(row.table).push(row.values);
+			}
 			try {
-				await this._client.insert({
-					table: this._runtimeOptions.table,
-					values: rows,
-					format: "JSONEachRow",
-				});
+				let written = 0;
+				for (const table of Array.from(grouped.keys())) {
+					const values = grouped.get(table) || [];
+					if (!values.length) {
+						continue;
+					}
+					await this._client.insert({ table, values, format: "JSONEachRow" });
+					written += values.length;
+				}
 				this.setConnected(true);
-				this.log.debug(`Flushed ${rows.length} rows to ClickHouse; remaining buffer=${this._buffer.length}`);
-				return rows.length;
+				this.log.debug(
+					`Flushed ${written} rows across ${grouped.size} tables; remaining buffer=${this._buffer.length}`,
+				);
+				return written;
 			} catch (error) {
 				this.setConnected(false);
 				this.log.error(`Failed to write ${rows.length} rows: ${extractError(error)}`);
@@ -1076,17 +1241,46 @@ ORDER BY (id, ts)`;
 			throw new Error("Not connected to ClickHouse");
 		}
 		await this.flushBuffer(true).catch(() => null);
-		const parameters = { id: String(id) };
-		const conditions = ["id = {id:String}"];
-		if (start !== undefined && end !== undefined) {
-			parameters.start = Number(start);
-			parameters.end = Number(end);
-			conditions.push(
-				"ts BETWEEN fromUnixTimestamp64Milli({start:UInt64}) AND fromUnixTimestamp64Milli({end:UInt64})",
-			);
+		let tableInfo = null;
+		try {
+			tableInfo = await this.resolveTableInfo(id);
+		} catch (error) {
+			this.log.debug(`Skip delete for ${id}: ${extractError(error)}`);
+			return;
 		}
-		const query = `ALTER TABLE ${this._tableIdentifier} DELETE WHERE ${conditions.join(" AND ")}`;
-		await this._client.command({ query, query_params: parameters });
+		if (!tableInfo) {
+			return;
+		}
+		const tableIdentifier = this.quoteIdent(tableInfo.table);
+		const parameters = /** @type {Record<string, unknown>} */ ({});
+		let query;
+		const normalizeTs = value => {
+			if (value === undefined || value === null) {
+				return undefined;
+			}
+			if (typeof value === "number" && !isNaN(value)) {
+				return Math.trunc(value);
+			}
+			const parsed = new Date(value).getTime();
+			return isNaN(parsed) ? undefined : Math.trunc(parsed);
+		};
+		const normalizedStart = normalizeTs(start);
+		const normalizedEnd = normalizeTs(end);
+		if (normalizedStart !== undefined && normalizedEnd !== undefined) {
+			parameters.start = normalizedStart;
+			parameters.end = normalizedEnd;
+			query = `ALTER TABLE ${tableIdentifier} DELETE WHERE ts BETWEEN fromUnixTimestamp64Milli({start:UInt64}) AND fromUnixTimestamp64Milli({end:UInt64})`;
+		} else if (normalizedStart !== undefined) {
+			parameters.start = normalizedStart;
+			query = `ALTER TABLE ${tableIdentifier} DELETE WHERE ts = fromUnixTimestamp64Milli({start:UInt64})`;
+		} else {
+			query = `ALTER TABLE ${tableIdentifier} DELETE WHERE 1`;
+		}
+		const commandOptions = { query };
+		if (Object.keys(parameters).length) {
+			commandOptions.query_params = parameters;
+		}
+		await this._client.command(commandOptions);
 	}
 
 	async handleGetHistory(msg) {
@@ -1106,8 +1300,21 @@ ORDER BY (id, ts)`;
 
 		await this.flushBuffer(true).catch(() => null);
 
-		const params = { id: String(id) };
-		const where = ["id = {id:String}"];
+		let tableInfo = null;
+		try {
+			tableInfo = await this.resolveTableInfo(id);
+		} catch (error) {
+			this.log.debug(`History request skipped for ${id}: ${extractError(error)}`);
+		}
+		if (!tableInfo) {
+			if (msg.callback) {
+				this.sendTo(msg.from, msg.command, { result: [], step: null, error: null }, msg.callback);
+			}
+			return;
+		}
+
+		const params = /** @type {Record<string, unknown>} */ ({});
+		const where = [];
 
 		if (options.start !== undefined) {
 			const start = typeof options.start === "number" ? options.start : new Date(options.start).getTime();
@@ -1130,44 +1337,12 @@ ORDER BY (id, ts)`;
 		}
 
 		const order = options.returnNewestEntries ? "DESC" : "ASC";
-		let selectClause;
-		if (this._compactSchema) {
-			selectClause = `SELECT
-				toUnixTimestamp64Milli(ts) AS ts,
-				toUnixTimestamp64Milli(ts) AS lc,
-				multiIf(
-					val_json IS NOT NULL, '${VALUE_TYPES.JSON}',
-					val_string IS NOT NULL, '${VALUE_TYPES.STRING}',
-					val_bool IS NOT NULL, '${VALUE_TYPES.BOOLEAN}',
-					val_float IS NOT NULL, '${VALUE_TYPES.NUMBER}',
-					'${VALUE_TYPES.NULL}'
-				) AS type,
-				val_float,
-				val_string,
-				val_bool,
-				val_json,
-				q,
-				1 AS ack,
-				'' AS source
-			`;
-		} else {
-			selectClause = `SELECT
-				toUnixTimestamp64Milli(ts) AS ts,
-				toUnixTimestamp64Milli(lc) AS lc,
-				type,
-				val_float,
-				val_string,
-				val_bool,
-				val_json,
-				ack,
-				q,
-				source
-			`;
-		}
-
-		const query = `${selectClause}
-		FROM ${this._tableIdentifier}
-		WHERE ${where.join(" AND ")}
+		const tableIdent = this.quoteIdent(tableInfo.table);
+		const query = `SELECT
+			toUnixTimestamp64Milli(ts) AS ts,
+			value
+		FROM ${tableIdent}
+		${where.length ? `WHERE ${where.join(" AND ")}` : ""}
 		ORDER BY ts ${order}
 		${limit > 0 ? "LIMIT {limit:UInt32}" : ""}`;
 
@@ -1175,10 +1350,14 @@ ORDER BY (id, ts)`;
 			throw new Error("Not connected to ClickHouse");
 		}
 
-		const result = await this._client.query({ query, query_params: params, format: "JSONEachRow" });
+		const result = await this._client.query({
+			query,
+			query_params: Object.keys(params).length ? params : undefined,
+			format: "JSONEachRow",
+		});
 		const rows = await result.json();
 
-		const data = rows.map(row => this.mapRowToHistory(row, id, options.addId));
+		const data = rows.map(row => this.mapRowToHistory(row, id, options.addId, tableInfo.type));
 		const filtered = options.ignoreNull === false ? data : data.filter(item => item.val !== null);
 		let resultData = filtered;
 		if (aggregate === "onchange") {
@@ -1191,40 +1370,16 @@ ORDER BY (id, ts)`;
 		}
 	}
 
-	mapRowToHistory(row, id, addId) {
+	mapRowToHistory(row, id, addId, storageType) {
 		const ts = Number(row.ts);
-		const lc = Number(row.lc);
-		let val = null;
-		switch (row.type) {
-			case VALUE_TYPES.NUMBER:
-				val = row.val_float;
-				break;
-			case VALUE_TYPES.BOOLEAN:
-				val = !!row.val_bool;
-				break;
-			case VALUE_TYPES.STRING:
-				val = row.val_string;
-				break;
-			case VALUE_TYPES.JSON:
-				try {
-					val = JSON.parse(row.val_json || "null");
-				} catch (error) {
-					this.log.debug(`Cannot parse JSON for ${id}: ${extractError(error)}`);
-					val = row.val_json;
-				}
-				break;
-			default:
-				val = null;
-				break;
-		}
-
+		const value = this.decodeValue(storageType, row.value);
 		const entry = {
-			val,
+			val: value,
 			ts: isNaN(ts) ? Date.now() : ts,
-			lc: isNaN(lc) ? undefined : lc,
-			ack: !!row.ack,
-			q: row.q ?? 0,
-			from: row.source || "",
+			lc: isNaN(ts) ? undefined : ts,
+			ack: true,
+			q: 0,
+			from: "",
 		};
 
 		if (addId) {
@@ -1295,7 +1450,7 @@ ORDER BY (id, ts)`;
 			) || 10000,
 		};
 		this.log.debug(
-			`Testing ClickHouse connection with host=${config.host}:${config.port}, secure=${config.secure}, database=${config.database}, table=${config.table}`,
+			`Testing ClickHouse connection with host=${config.host}:${config.port}, secure=${config.secure}, database=${config.database}, tablePrefix=${config.table}`,
 		);
 
 		const hostUrl = `${config.secure ? "https" : "http"}://${config.host}:${config.port}`;
