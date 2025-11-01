@@ -48,13 +48,26 @@ Repeat (or generate a batch using `system.tables`) for all `history_*` tables wh
 
 ## 3. Initial backfill for aggregates
 
-Materialized views keep `history_daily` up to date for new measurements. To populate historical days that existed **before** the upgrade, run the helper script once:
+Materialized views keep `history_daily` up to date for new measurements. To populate days that existed **before** the upgrade, copy the SQL below, replace `<TABLE_NAME>` with the per-state table and `<STATE_ID>` with the corresponding registry entry, then run it once per numeric datapoint:
 
-```
-npm run downsample -- --host=127.0.0.1 --database=iobroker --prefix=history
+```sql
+INSERT INTO iobroker.history_daily_state
+SELECT
+	'<STATE_ID>' AS id,
+	toDate(ts) AS day,
+	minState(toFloat64(value)) AS min_state,
+	maxState(toFloat64(value)) AS max_state,
+	avgState(toFloat64(value)) AS avg_state,
+	argMaxState(toFloat64(value), ts) AS last_state,
+	countState() AS count_state,
+	sumState(toFloat64(value)) AS sum_state,
+	sumState(toFloat64(value) * greatest(0, dateDiff('second', ts, coalesce(lead(ts) OVER (ORDER BY ts), ts))) / 3.6e6) AS integral_state,
+	now() AS updated
+FROM iobroker.`<TABLE_NAME>`
+GROUP BY day;
 ```
 
-Add `--start=<unix_ms>` / `--end=<unix_ms>` to limit the backfill to a specific time range. Leave the script in place for occasional re-runs if you import legacy data later.
+Repeat for each table you want to backfill. Afterwards the materialized view keeps the aggregates current automatically.
 
 ## 4. Query daily aggregates
 

@@ -431,13 +431,13 @@ ORDER BY (id, day)`;
 SELECT
 	id,
 	day,
-	finalizeAggregation(min_state) AS min,
-	finalizeAggregation(max_state) AS max,
-	finalizeAggregation(avg_state) AS avg,
-	finalizeAggregation(last_state) AS last,
-	finalizeAggregation(count_state) AS samples,
-	finalizeAggregation(sum_state) AS sum,
-	finalizeAggregation(integral_state) AS integral_kwh,
+	minMerge(min_state) AS min,
+	maxMerge(max_state) AS max,
+	avgMerge(avg_state) AS avg,
+	argMaxMerge(last_state) AS last,
+	countMerge(count_state) AS samples,
+	sumMerge(sum_state) AS sum,
+	sumMerge(integral_state) AS integral_kwh,
 	max(updated) AS updated
 FROM ${this._aggregateStateIdentifier}
 GROUP BY id, day`;
