@@ -55,15 +55,16 @@ INSERT INTO iobroker.history_daily_state
 SELECT
 	'<STATE_ID>' AS id,
 	toDate(ts) AS day,
-	minState(toFloat64(value)) AS min_state,
-	maxState(toFloat64(value)) AS max_state,
-	avgState(toFloat64(value)) AS avg_state,
-	argMaxState(toFloat64(value), ts) AS last_state,
+	minState(toFloat64(assumeNotNull(value))) AS min_state,
+	maxState(toFloat64(assumeNotNull(value))) AS max_state,
+	avgState(toFloat64(assumeNotNull(value))) AS avg_state,
+	argMaxState(toFloat64(assumeNotNull(value)), ts) AS last_state,
 	countState() AS count_state,
-	sumState(toFloat64(value)) AS sum_state,
-	sumState(toFloat64(value) * greatest(0, dateDiff('second', ts, coalesce(lead(ts) OVER (ORDER BY ts), ts))) / 3.6e6) AS integral_state,
+	sumState(toFloat64(assumeNotNull(value))) AS sum_state,
+	sumState(toFloat64(assumeNotNull(value)) * greatest(0, dateDiff('second', ts, coalesce(lead(ts) OVER (ORDER BY ts), ts))) / 3.6e6) AS integral_state,
 	now() AS updated
 FROM iobroker.`<TABLE_NAME>`
+WHERE value IS NOT NULL
 GROUP BY day;
 ```
 

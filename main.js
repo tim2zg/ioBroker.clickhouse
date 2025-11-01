@@ -605,9 +605,10 @@ FROM (
 	SELECT
 		ts,
 		toDate(ts) AS day,
-		toFloat64(value) AS val,
+		toFloat64(assumeNotNull(value)) AS val,
 		greatest(0, dateDiff('second', ts, coalesce(lead(ts) OVER w, ts))) AS duration
 	FROM ${rawIdentifier}
+	WHERE value IS NOT NULL
 	WINDOW w AS (ORDER BY ts)
 )
 GROUP BY day`;
