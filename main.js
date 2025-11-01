@@ -249,8 +249,7 @@ class Clickhouse extends utils.Adapter {
 	}
 
 	buildCreateTableQuery() {
-		return `CREATE TABLE IF NOT EXISTS ${this._tableIdentifier}
-{
+		return `CREATE TABLE IF NOT EXISTS ${this._tableIdentifier} (
 	 id String,
 	 ts DateTime64(3, 'UTC'),
 	 val_float Nullable(Float64),
