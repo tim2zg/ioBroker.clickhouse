@@ -1,0 +1,56 @@
+{
+	"i18n": true,
+	"type": "panel",
+	"items": {
+		"host": {
+			"type": "text",
+			"label": "Host",
+			"newLine": true
+		},
+		"port": {
+			"type": "number",
+			"label": "Port",
+			"newLine": true
+		},
+		"secure": {
+			"type": "checkbox",
+			"label": "Use TLS",
+			"newLine": true
+		},
+		"username": {
+			"type": "text",
+			"label": "Username",
+			"newLine": true
+		},
+		"password": {
+			"type": "text",
+			"label": "Password",
+			"newLine": true
+		},
+		"database": {
+			"type": "text",
+			"label": "Database",
+			"newLine": true
+		},
+		"table": {
+			"type": "text",
+			"label": "Table",
+			"newLine": true
+		},
+		"flushInterval": {
+			"type": "number",
+			"label": "Flush interval (ms)",
+			"newLine": true
+		},
+		"batchSize": {
+			"type": "number",
+			"label": "Batch size",
+			"newLine": true
+		},
+		"connectTimeout": {
+			"type": "number",
+			"label": "Connect timeout (ms)",
+			"newLine": true
+		}
+	}
+}

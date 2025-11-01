@@ -1,0 +1,104 @@
+{
+	"i18n": false,
+	"type": "panel",
+	"items": {
+		"enabled": {
+			"type": "checkbox",
+			"label": "Enable logging",
+			"sm": 6,
+			"default": false
+		},
+		"storageType": {
+			"newLine": true,
+			"type": "select",
+			"label": "Store value as",
+			"sm": 6,
+			"default": "auto",
+			"options": [
+				{ "value": "auto", "label": "Automatic" },
+				{ "value": "number", "label": "Number" },
+				{ "value": "string", "label": "String" },
+				{ "value": "boolean", "label": "Boolean" },
+				{ "value": "json", "label": "JSON" }
+			]
+		},
+		"blockTime": {
+			"type": "number",
+			"label": "Block time (ms)",
+			"sm": 6,
+			"min": 0,
+			"max": 86400000,
+			"default": 0
+		},
+		"changesOnly": {
+			"newLine": true,
+			"type": "checkbox",
+			"label": "Log changes only",
+			"sm": 6,
+			"default": true
+		},
+		"changesRelogInterval": {
+			"type": "number",
+			"label": "Relog interval (s)",
+			"sm": 6,
+			"min": 0,
+			"default": 0,
+			"disabled": "!data.changesOnly"
+		},
+		"changesMinDelta": {
+			"type": "number",
+			"label": "Minimal delta",
+			"sm": 6,
+			"min": 0,
+			"default": 0,
+			"disabled": "!data.changesOnly"
+		},
+		"ignoreZero": {
+			"type": "checkbox",
+			"label": "Ignore zero/null values",
+			"sm": 6,
+			"default": false
+		},
+		"ignoreBelowNumber": {
+			"newLine": true,
+			"type": "text",
+			"label": "Ignore values below",
+			"sm": 6,
+			"default": "",
+			"validator": "((data.ignoreBelowNumber || '').toString().length === 0) || isFinite(data.ignoreBelowNumber)",
+			"validatorErrorText": "Enter a number or leave empty",
+			"validatorNoSaveOnError": true
+		},
+		"ignoreAboveNumber": {
+			"type": "text",
+			"label": "Ignore values above",
+			"sm": 6,
+			"default": "",
+			"validator": "((data.ignoreAboveNumber || '').toString().length === 0) || isFinite(data.ignoreAboveNumber)",
+			"validatorErrorText": "Enter a number or leave empty",
+			"validatorNoSaveOnError": true
+		},
+		"round": {
+			"type": "text",
+			"label": "Round decimals",
+			"sm": 6,
+			"default": "",
+			"validator": "((data.round || '').toString().length === 0) || isFinite(data.round)",
+			"validatorErrorText": "Enter a number or leave empty",
+			"validatorNoSaveOnError": true
+		},
+		"enableDebugLogs": {
+			"newLine": true,
+			"type": "checkbox",
+			"label": "Enable debug logs",
+			"sm": 6,
+			"default": false
+		},
+		"disableSkippedValueLogging": {
+			"type": "checkbox",
+			"label": "Disable skipped value logging",
+			"sm": 6,
+			"default": false
+		}
+	}
+}

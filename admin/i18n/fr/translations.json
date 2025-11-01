@@ -1,0 +1,13 @@
+{
+	"clickhouse adapter settings": "Paramètres d'adaptateur pour clickhouse",
+	"host": "Host",
+	"port": "Port",
+	"secure": "Use TLS",
+	"username": "Username",
+	"password": "Password",
+	"database": "Database",
+	"table": "Table",
+	"flushInterval": "Flush interval (ms)",
+	"batchSize": "Batch size",
+	"connectTimeout": "Connect timeout (ms)"
+}

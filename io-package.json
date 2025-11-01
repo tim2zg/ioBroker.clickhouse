@@ -1,0 +1,103 @@
+{
+	"common": {
+		"name": "clickhouse",
+		"version": "0.0.1",
+		"news": {
+			"0.0.1": {
+				"en": "initial release",
+				"de": "Erstveröffentlichung",
+				"ru": "Начальная версия",
+				"pt": "lançamento inicial",
+				"nl": "Eerste uitgave",
+				"fr": "Première version",
+				"it": "Versione iniziale",
+				"es": "Versión inicial",
+				"pl": "Pierwsze wydanie",
+				"uk": "Початкова версія",
+				"zh-cn": "首次出版"
+			}
+		},
+		"titleLang": {
+			"en": "ClickHouse Storage",
+			"de": "ClickHouse Storage",
+			"ru": "ClickHouse Storage",
+			"pt": "ClickHouse Storage",
+			"nl": "ClickHouse Storage",
+			"fr": "ClickHouse Storage",
+			"it": "ClickHouse Storage",
+			"es": "ClickHouse Storage",
+			"pl": "ClickHouse Storage",
+			"uk": "ClickHouse Storage",
+			"zh-cn": "ClickHouse Storage"
+		},
+		"desc": {
+			"en": "clickhouse",
+			"de": "clickhouse",
+			"ru": "clickhouse",
+			"pt": "clickhouse",
+			"nl": "clickhouse",
+			"fr": "clickhouse",
+			"it": "clickhouse",
+			"es": "clickhouse",
+			"pl": "clickhouse",
+			"uk": "clickhouse",
+			"zh-cn": "clickhouse"
+		},
+		"authors": [
+			"Tim <ccu.schaller@outlook.com>"
+		],
+		"keywords": [
+			"ioBroker",
+			"template",
+			"Smart Home",
+			"home automation"
+		],
+		"licenseInformation": {
+			"type": "free",
+			"license": "MIT"
+		},
+		"platform": "Javascript/Node.js",
+		"icon": "clickhouse.png",
+		"enabled": true,
+		"extIcon": "https://raw.githubusercontent.com/tim2zg/ioBroker.clickhouse/main/admin/clickhouse.png",
+		"readme": "https://github.com/tim2zg/ioBroker.clickhouse/blob/main/README.md",
+		"loglevel": "info",
+		"tier": 3,
+		"mode": "daemon",
+		"type": "storage",
+		"compact": true,
+		"connectionType": "local",
+		"dataSource": "push",
+		"getHistory": true,
+		"supportCustoms": true,
+		"preserveSettings": "custom",
+		"adminUI": {
+			"config": "json",
+			"custom": "json"
+		},
+		"dependencies": [
+			{
+				"js-controller": ">=6.0.11"
+			}
+		],
+		"globalDependencies": [
+			{
+				"admin": ">=7.0.23"
+			}
+		]
+	},
+	"native": {
+		"host": "localhost",
+		"port": "8123",
+		"secure": false,
+		"username": "default",
+		"password": "",
+		"database": "iobroker",
+		"table": "history",
+		"flushInterval": "5000",
+		"batchSize": "500",
+		"connectTimeout": "10000"
+	},
+	"objects": [],
+	"instanceObjects": []
+}

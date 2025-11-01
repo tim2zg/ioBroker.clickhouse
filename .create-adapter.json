@@ -1,0 +1,95 @@
+{
+	"expert": "no",
+	"cli": false,
+	"adapterName": "clickhouse",
+	"title": "ClickHouse Storage",
+	"description": "",
+	"keywords": "",
+	"contributors": "",
+	"features": [
+		"adapter"
+	],
+	"adminFeatures": [],
+	"type": "storage",
+	"startMode": "daemon",
+	"connectionType": "local",
+	"dataSource": "push",
+	"connectionIndicator": "no",
+	"adapterSettings": [
+		{
+			"key": "host",
+			"label": "Host",
+			"inputType": "text",
+			"defaultValue": "localhost"
+		},
+		{
+			"key": "port",
+			"label": "Port",
+			"inputType": "number",
+			"defaultValue": "8123"
+		},
+		{
+			"key": "secure",
+			"label": "Use TLS",
+			"inputType": "checkbox",
+			"defaultValue": false
+		},
+		{
+			"key": "username",
+			"label": "Username",
+			"inputType": "text",
+			"defaultValue": "default"
+		},
+		{
+			"key": "password",
+			"label": "Password",
+			"inputType": "text",
+			"defaultValue": ""
+		},
+		{
+			"key": "database",
+			"label": "Database",
+			"inputType": "text",
+			"defaultValue": "iobroker"
+		},
+		{
+			"key": "table",
+			"label": "Table",
+			"inputType": "text",
+			"defaultValue": "history"
+		},
+		{
+			"key": "flushInterval",
+			"label": "Flush interval (ms)",
+			"inputType": "number",
+			"defaultValue": "5000"
+		},
+		{
+			"key": "batchSize",
+			"label": "Batch size",
+			"inputType": "number",
+			"defaultValue": "500"
+		},
+		{
+			"key": "connectTimeout",
+			"label": "Connect timeout (ms)",
+			"inputType": "number",
+			"defaultValue": "10000"
+		}
+	],
+	"language": "JavaScript",
+	"adminUi": "json",
+	"releaseScript": "yes",
+	"indentation": "Tab",
+	"quotes": "double",
+	"tools": [
+		"ESLint",
+		"type checking"
+	],
+	"authorName": "Tim",
+	"authorGithub": "tim2zg",
+	"authorEmail": "ccu.schaller@outlook.com",
+	"license": "MIT License",
+	"target": "zip",
+	"creatorVersion": "2.6.5"
+}
