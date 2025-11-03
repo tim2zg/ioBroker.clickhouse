@@ -57,6 +57,17 @@ const VALUE_COLUMN_CONFIG = {
 const NUMERIC_EPSILON = 1e-12;
 const RAW_HISTORY_TTL_DAYS = 90;
 
+function isAcknowledgedFlag(value) {
+	if (value === true || value === 1) {
+		return true;
+	}
+	if (typeof value === "string") {
+		const trimmed = value.trim().toLowerCase();
+		return trimmed === "true" || trimmed === "1" || trimmed === "ack";
+	}
+	return false;
+}
+
 function isObject(value) {
 	return Object.prototype.toString.call(value) === "[object Object]";
 }
@@ -1123,11 +1134,12 @@ GROUP BY day`;
 		}
 
 		const settings = entry.config;
+		const acknowledged = isAcknowledgedFlag(state.ack);
 		const clonedState = {
 			val: state.val,
 			ts: typeof state.ts === "number" && !isNaN(state.ts) ? state.ts : Date.now(),
 			lc: typeof state.lc === "number" && !isNaN(state.lc) ? state.lc : Date.now(),
-			ack: state.ack === undefined ? true : Boolean(state.ack),
+			ack: acknowledged,
 			q: state.q ?? 0,
 			from: state.from || "",
 		};
@@ -1139,7 +1151,7 @@ GROUP BY day`;
 
 		entry.lastState = { ...clonedState };
 
-		if (!timerRelog && !settings.logAckFalse && state.ack === false) {
+		if (!timerRelog && !settings.logAckFalse && !acknowledged) {
 			if (!settings.disableSkippedValueLogging) {
 				entry.lastSkippedState = { ...clonedState };
 			}
