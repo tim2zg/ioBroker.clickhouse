@@ -1127,7 +1127,7 @@ GROUP BY day`;
 			val: state.val,
 			ts: typeof state.ts === "number" && !isNaN(state.ts) ? state.ts : Date.now(),
 			lc: typeof state.lc === "number" && !isNaN(state.lc) ? state.lc : Date.now(),
-			ack: state.ack === undefined ? false : Boolean(state.ack),
+			ack: state.ack === undefined ? true : Boolean(state.ack),
 			q: state.q ?? 0,
 			from: state.from || "",
 		};
