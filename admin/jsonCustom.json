@@ -53,6 +53,13 @@
 			"default": 0,
 			"disabled": "!data.changesOnly"
 		},
+		"logAckFalse": {
+			"newLine": true,
+			"type": "checkbox",
+			"label": "Log ack=false states",
+			"sm": 6,
+			"default": false
+		},
 		"ignoreZero": {
 			"type": "checkbox",
 			"label": "Ignore zero/null values",

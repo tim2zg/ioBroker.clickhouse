@@ -190,6 +190,7 @@ class Clickhouse extends utils.Adapter {
 			round: null,
 			changesRelogInterval: 0,
 			changesMinDelta: 0,
+			logAckFalse: false,
 			storageType: "auto",
 			enableDebugLogs: false,
 			disableSkippedValueLogging: false,
@@ -496,10 +497,14 @@ GROUP BY id, day`;
 		if (info) {
 			return info;
 		}
+		const client = this._client;
+		if (!client) {
+			throw new Error("Not connected to ClickHouse");
+		}
 		const tableName = this.generateTableName(id);
 		const tableIdentifier = this.quoteIdent(tableName);
 		const columnConfig = this.getColumnConfig(valueType);
-		await this._client.command({
+		await client.command({
 			query: `CREATE TABLE IF NOT EXISTS ${tableIdentifier} (
 	 ts DateTime64(3, 'UTC'),
 	 value ${columnConfig.columnType}
@@ -509,7 +514,7 @@ ORDER BY ts
 TTL ts + INTERVAL ${RAW_HISTORY_TTL_DAYS} DAY DELETE`,
 		});
 		await this.ensureRawTableTtl(tableName);
-		await this._client.insert({
+		await client.insert({
 			table: this._registryTable,
 			values: [
 				{
@@ -733,6 +738,7 @@ GROUP BY day`;
 			storageType: String(custom.storageType || this._defaults.storageType).toLowerCase(),
 			blockTime: Math.max(parseNumber(custom.blockTime, this._defaults.blockTime), 0),
 			changesOnly: parseBool(custom.changesOnly, this._defaults.changesOnly),
+			logAckFalse: parseBool(custom.logAckFalse, this._defaults.logAckFalse),
 			ignoreZero: parseBool(custom.ignoreZero, this._defaults.ignoreZero),
 			ignoreBelowNumber:
 				custom.ignoreBelowNumber !== "" && custom.ignoreBelowNumber !== undefined
@@ -754,10 +760,10 @@ GROUP BY day`;
 				this._defaults.disableSkippedValueLogging,
 			),
 		};
-		if (isNaN(normalized.ignoreBelowNumber)) {
+		if (normalized.ignoreBelowNumber === null || Number.isNaN(normalized.ignoreBelowNumber)) {
 			normalized.ignoreBelowNumber = null;
 		}
-		if (isNaN(normalized.ignoreAboveNumber)) {
+		if (normalized.ignoreAboveNumber === null || Number.isNaN(normalized.ignoreAboveNumber)) {
 			normalized.ignoreAboveNumber = null;
 		}
 		return normalized;
@@ -771,11 +777,22 @@ GROUP BY day`;
 			configHash: JSON.stringify(custom),
 			timeout: null,
 			relogTimeout: null,
-			lastState: null,
-			lastStoredState: null,
+			lastState: /** @type {ioBroker.State | null} */ (null),
+			lastStoredState: /** @type {
+				|	{
+					val: unknown;
+					ts: number;
+					lc: number;
+					type: string;
+					ack: boolean;
+					q: number;
+					source: string;
+				}
+				|	null
+			} */ (null),
 			lastStoredComparable: undefined,
 			lastLogTime: 0,
-			lastSkippedState: null,
+			lastSkippedState: /** @type {ioBroker.State | null} */ (null),
 			ephemeral: false,
 		};
 		this._tracked.set(id, entry);
@@ -790,7 +807,7 @@ GROUP BY day`;
 		try {
 			const current = await this.getForeignStateAsync(id);
 			if (current) {
-				entry.lastState = { ...current };
+				entry.lastState = /** @type {ioBroker.State} */ ({ ...current });
 			}
 		} catch (error) {
 			this.log.debug(`Cannot read initial state for ${id}: ${extractError(error)}`);
@@ -807,11 +824,22 @@ GROUP BY day`;
 			configHash: null,
 			timeout: null,
 			relogTimeout: null,
-			lastState: null,
-			lastStoredState: null,
+			lastState: /** @type {ioBroker.State | null} */ (null),
+			lastStoredState: /** @type {
+				|	{
+					val: unknown;
+					ts: number;
+					lc: number;
+					type: string;
+					ack: boolean;
+					q: number;
+					source: string;
+				}
+				|	null
+			} */ (null),
 			lastStoredComparable: undefined,
 			lastLogTime: 0,
-			lastSkippedState: null,
+			lastSkippedState: /** @type {ioBroker.State | null} */ (null),
 			ephemeral: true,
 		};
 		this._tracked.set(id, entry);
@@ -1099,7 +1127,7 @@ GROUP BY day`;
 			val: state.val,
 			ts: typeof state.ts === "number" && !isNaN(state.ts) ? state.ts : Date.now(),
 			lc: typeof state.lc === "number" && !isNaN(state.lc) ? state.lc : Date.now(),
-			ack: state.ack ?? false,
+			ack: state.ack === undefined ? false : Boolean(state.ack),
 			q: state.q ?? 0,
 			from: state.from || "",
 		};
@@ -1110,6 +1138,14 @@ GROUP BY day`;
 		}
 
 		entry.lastState = { ...clonedState };
+
+		if (!timerRelog && !settings.logAckFalse && state.ack === false) {
+			if (!settings.disableSkippedValueLogging) {
+				entry.lastSkippedState = { ...clonedState };
+			}
+			settings.enableDebugLogs && this.log.debug(`Skip ${entry.id}: ack=false`);
+			return;
+		}
 
 		let converted;
 		try {
@@ -1220,13 +1256,17 @@ GROUP BY day`;
 				grouped.get(row.table).push(row.values);
 			}
 			try {
+				const client = this._client;
+				if (!client) {
+					throw new Error("Not connected to ClickHouse");
+				}
 				let written = 0;
 				for (const table of Array.from(grouped.keys())) {
 					const values = grouped.get(table) || [];
 					if (!values.length) {
 						continue;
 					}
-					await this._client.insert({ table, values, format: "JSONEachRow" });
+					await client.insert({ table, values, format: "JSONEachRow" });
 					written += values.length;
 				}
 				this.setConnected(true);
