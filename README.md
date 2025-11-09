@@ -111,6 +111,11 @@ For later updates, the above procedure is not necessary. Just do the following:
 -->
 
 ### **WORK IN PROGRESS**
+
+### 0.0.2 (2025-11-09)
+* (Tim) Adjusted ack filtering defaults and added detailed flush payload debug logging
+
+### 0.0.1 (2025-??-??)
 * (Tim) initial release
 
 ## License

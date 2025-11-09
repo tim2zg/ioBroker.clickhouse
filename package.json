@@ -1,6 +1,6 @@
 {
   "name": "iobroker.clickhouse",
-  "version": "0.0.1",
+  "version": "0.0.2",
   "description": "clickhouse",
   "author": {
     "name": "Tim",

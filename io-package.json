@@ -1,8 +1,21 @@
 {
 	"common": {
 		"name": "clickhouse",
-		"version": "0.0.1",
+		"version": "0.0.2",
 		"news": {
+			"0.0.2": {
+				"en": "Improve ack filtering defaults and add flush payload debug logging",
+				"de": "Verbesserte Ack-Filter-Standardeinstellungen und Debug-Logging der Flush-Daten",
+				"ru": "Улучшены значения по умолчанию для фильтрации ack и добавлено отладочное логирование отправляемых данных",
+				"pt": "Melhoria nos padrões de filtragem de ack e adição de log de depuração das cargas gravadas",
+				"nl": "Verbeterde standaard ack-filtering en extra debuglog voor flushgegevens",
+				"fr": "Amélioration des paramètres par défaut du filtre ack et ajout du journal de débogage des données envoyées",
+				"it": "Migliorati i valori predefiniti del filtro ack e aggiunto il log di debug dei dati inviati",
+				"es": "Mejora de los valores predeterminados del filtro ack y registro de depuración de los datos enviados",
+				"pl": "Ulepszono domyślne filtrowanie ack i dodano logowanie debug ładunków zapisu",
+				"uk": "Поліпшено стандартні налаштування фільтра ack та додано налагоджувальне логування даних скидання",
+				"zh-cn": "改进确认过滤默认值并新增刷新负载调试日志"
+			},
 			"0.0.1": {
 				"en": "initial release",
 				"de": "Erstveröffentlichung",
