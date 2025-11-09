@@ -1278,6 +1278,9 @@ GROUP BY day`;
 					if (!values.length) {
 						continue;
 					}
+					this.log.debug(
+						`Flush payload for ${table}: ${JSON.stringify(values)}`,
+					);
 					await client.insert({ table, values, format: "JSONEachRow" });
 					written += values.length;
 				}
