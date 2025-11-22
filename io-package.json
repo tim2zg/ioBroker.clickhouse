@@ -1,8 +1,21 @@
 {
 	"common": {
 		"name": "clickhouse",
-		"version": "0.0.2",
+		"version": "0.0.3",
 		"news": {
+			"0.0.3": {
+				"en": "Add configurable daily aggregation mode",
+				"de": "Konfigurierbarer täglicher Aggregationsmodus hinzugefügt",
+				"ru": "Добавлен настраиваемый режим ежедневной агрегации",
+				"pt": "Adicionado modo de agregação diária configurável",
+				"nl": "Configureerbare dagelijkse aggregatiemodus toegevoegd",
+				"fr": "Ajout d'un mode d'agrégation quotidien configurable",
+				"it": "Aggiunta modalità di aggregazione giornaliera configurabile",
+				"es": "Se agregó el modo de agregación diaria configurable",
+				"pl": "Dodano konfigurowalny tryb dziennej agregacji",
+				"uk": "Додано налаштовуваний режим щоденної агрегації",
+				"zh-cn": "添加可配置的每日聚合模式"
+			},
 			"0.0.2": {
 				"en": "Improve ack filtering defaults and add flush payload debug logging",
 				"de": "Verbesserte Ack-Filter-Standardeinstellungen und Debug-Logging der Flush-Daten",
