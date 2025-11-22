@@ -205,7 +205,10 @@ class Clickhouse extends utils.Adapter {
 			storageType: "auto",
 			enableDebugLogs: false,
 			disableSkippedValueLogging: false,
+			dailyAggregator: "integral_w",
 		};
+
+		this._preloadedConfigs = new Map();
 
 		this.on("ready", this.onReady.bind(this));
 		this.on("stateChange", this.onStateChange.bind(this));
@@ -257,6 +260,7 @@ class Clickhouse extends utils.Adapter {
 			this.parseAdapterConfig();
 			await this.ensureInfoObjects();
 			await this.ensureDefaultHistoryInstance();
+			await this.preloadCustomConfigs();
 			await this.connectToClickHouse();
 			await this.initializeTrackedDatapoints();
 			this.subscribeForeignObjects("*");
@@ -603,6 +607,18 @@ TTL ts + INTERVAL ${RAW_HISTORY_TTL_DAYS} DAY DELETE`,
 		const stateIdentifier = this._aggregateStateIdentifier;
 		const rawIdentifier = `${this.quoteIdent(info.table)}`;
 		const escapedId = String(id).replace(/'/g, "''");
+		const tracked = this._tracked.get(id) || this._preloadedConfigs.get(id);
+		const aggregator = tracked?.config?.dailyAggregator || "integral_w";
+
+		let integralExpression = "sumState(val * duration / 3.6e6)";
+		if (aggregator === "integral_kw") {
+			integralExpression = "sumState(val * duration / 3600)";
+		} else if (aggregator === "sum") {
+			integralExpression = "sumState(val)";
+		} else if (aggregator === "none") {
+			integralExpression = "sumState(0)";
+		}
+
 		const query = `CREATE MATERIALIZED VIEW IF NOT EXISTS ${mvIdentifier}
 TO ${stateIdentifier}
 AS
@@ -615,7 +631,7 @@ SELECT
 	argMaxState(val, ts) AS last_state,
 	countState() AS count_state,
 	sumState(val) AS sum_state,
-	sumState(val * duration / 3.6e6) AS integral_state,
+	${integralExpression} AS integral_state,
 	now() AS updated
 FROM (
 	SELECT
@@ -770,6 +786,7 @@ GROUP BY day`;
 				custom.disableSkippedValueLogging,
 				this._defaults.disableSkippedValueLogging,
 			),
+			dailyAggregator: String(custom.dailyAggregator || this._defaults.dailyAggregator),
 		};
 		if (normalized.ignoreBelowNumber === null || Number.isNaN(normalized.ignoreBelowNumber)) {
 			normalized.ignoreBelowNumber = null;
@@ -778,6 +795,24 @@ GROUP BY day`;
 			normalized.ignoreAboveNumber = null;
 		}
 		return normalized;
+	}
+
+	async preloadCustomConfigs() {
+		this._preloadedConfigs.clear();
+		try {
+			const doc = await this.getObjectViewAsync("system", "custom", {});
+			if (doc?.rows?.length) {
+				for (const row of doc.rows) {
+					const custom = row.value?.[this.namespace];
+					if (custom?.enabled) {
+						const normalized = this.normalizeStateConfig(custom);
+						this._preloadedConfigs.set(row.id, { config: normalized });
+					}
+				}
+			}
+		} catch (error) {
+			this.log.warn(`Could not preload custom settings: ${extractError(error)}`);
+		}
 	}
 
 	async addTrackedDatapoint(id, custom) {
