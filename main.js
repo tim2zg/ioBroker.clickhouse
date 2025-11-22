@@ -178,7 +178,9 @@ class Clickhouse extends utils.Adapter {
 		this._aggregateStateIdentifier = "";
 		this._aggregateViewTable = "";
 		this._aggregateViewIdentifier = "";
+		this._aggregateViewIdentifier = "";
 		this._materializedViewCache = new Set();
+		this._reservedTables = new Set();
 		/** @type {{ host: string; port: number; secure: boolean; username: string; password: string; database: string; table: string; flushInterval: number; batchSize: number; connectTimeout: number }} */
 		this._runtimeOptions = {
 			host: "127.0.0.1",
@@ -353,6 +355,9 @@ class Clickhouse extends utils.Adapter {
 				return true;
 			}
 		}
+		if (this._reservedTables.has(name)) {
+			return true;
+		}
 		return false;
 	}
 
@@ -517,36 +522,41 @@ GROUP BY id, day`;
 			throw new Error("Not connected to ClickHouse");
 		}
 		const tableName = this.generateTableName(id);
-		const tableIdentifier = this.quoteIdent(tableName);
-		const columnConfig = this.getColumnConfig(valueType);
-		await client.command({
-			query: `CREATE TABLE IF NOT EXISTS ${tableIdentifier} (
-	 ts DateTime64(3, 'UTC'),
-	 value ${columnConfig.columnType}
-)
-ENGINE = MergeTree()
-ORDER BY ts
-TTL ts + INTERVAL ${RAW_HISTORY_TTL_DAYS} DAY DELETE`,
-		});
-		await this.ensureRawTableTtl(tableName);
-		await client.insert({
-			table: this._registryTable,
-			values: [
-				{
-					id,
-					table: tableName,
-					type: valueType,
-					updated: formatDateTime(Date.now()),
-				},
-			],
-			format: "JSONEachRow",
-		});
-		info = { table: tableName, type: valueType };
-		this._tableCache.set(id, info);
-		if (this.supportsContinuousAggregation(valueType)) {
-			await this.ensureMaterializedViewFor(id, info);
+		this._reservedTables.add(tableName);
+		try {
+			const tableIdentifier = this.quoteIdent(tableName);
+			const columnConfig = this.getColumnConfig(valueType);
+			await client.command({
+				query: `CREATE TABLE IF NOT EXISTS ${tableIdentifier} (
+		 ts DateTime64(3, 'UTC'),
+		 value ${columnConfig.columnType}
+	)
+	ENGINE = MergeTree()
+	ORDER BY ts
+	TTL ts + INTERVAL ${RAW_HISTORY_TTL_DAYS} DAY DELETE`,
+			});
+			await this.ensureRawTableTtl(tableName);
+			await client.insert({
+				table: this._registryTable,
+				values: [
+					{
+						id,
+						table: tableName,
+						type: valueType,
+						updated: formatDateTime(Date.now()),
+					},
+				],
+				format: "JSONEachRow",
+			});
+			info = { table: tableName, type: valueType };
+			this._tableCache.set(id, info);
+			if (this.supportsContinuousAggregation(valueType)) {
+				await this.ensureMaterializedViewFor(id, info);
+			}
+			return info;
+		} finally {
+			this._reservedTables.delete(tableName);
 		}
-		return info;
 	}
 
 	async resolveTableInfo(id) {
